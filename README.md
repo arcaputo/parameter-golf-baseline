@@ -100,8 +100,9 @@ The last `_exact` line is the score. A run **meets the rules** only if all of th
 **Scoring.** The benchmark runs three seeds (1337, 42, 2024) on one 8×H100 SXM machine. It reports the mean val_bpb
 and `meets_rules`, and runs the parent's code once on the same machine for a delta. Before that, `pgolf-rules`
 checks the static rules, and `pgolf-smoke` runs a short training on one H100. That short run checks that the
-script trains, stops at the cap, writes and round-trips an artifact under 16 MB, scores the whole split, and makes
-no network calls or training-data reads after training.
+script trains, stops at the cap, writes and round-trips an artifact under 16 MB, scores the whole split, makes
+no network calls, reads no training data during evaluation, and opens training data after the training loop only
+if the run stopped its loop early to leave time for that inside `MAX_WALLCLOCK_SECONDS`.
 
 ## Files
 
@@ -111,6 +112,9 @@ no network calls or training-data reads after training.
 | `data/cached_challenge_fineweb.py` | Downloads the published FineWeb export and tokenizer from Hugging Face |
 | `data/download_hf_docs_and_tokenize.py`, `data/tokenizer_specs.json` | Rebuilds tokenizers and shards from the published documents |
 | `requirements.txt` | The eval environment |
+
+The 1500-line limit in `train_gpt.py`'s docstring applies to the challenge's own starter scripts, not to
+submissions; a candidate may grow past it.
 
 Adapted from openai/parameter-golf (MIT License); its training code adapts modded-nanogpt (see
 THIRD_PARTY_NOTICES.md).
