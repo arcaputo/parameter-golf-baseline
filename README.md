@@ -8,7 +8,8 @@ for a language model that:
 - fits in a **16,000,000-byte artifact** (decimal 16 MB, not 16 MiB): the bytes of `train_gpt.py` plus the
   bytes of the compressed model file it writes.
 
-`train_gpt.py` is the challenge's naive baseline: a 9-layer, 512-wide GPT (8 heads, 4 KV heads, 2× ReLU²
+`train_gpt.py` is the challenge's naive baseline (records/track_10min_16mb/2026-03-17_NaiveBaseline at upstream
+commit a15093a, the launch snapshot): a 9-layer, 512-wide GPT (8 heads, 4 KV heads, 2× ReLU²
 MLP, tied embeddings, 1024-token SentencePiece vocabulary, about 17M parameters). It trains with Muon and Adam
 on 524,288 tokens per step until the 600-second wallclock cap, quantizes the weights to int8 per row,
 compresses them with zlib, then loads the compressed file back and evaluates it. Its published result is
@@ -52,29 +53,55 @@ From the challenge's README and FAQ:
 
 ## How this project scores a candidate
 
-- **Data and tokenizer are fixed** to `fineweb10B_sp1024` and `fineweb_1024_bpe.model` (the challenge's
-  published export, pinned to its Hugging Face revision). The evals pass them in as `DATA_PATH` and
-  `TOKENIZER_PATH`; nothing under `data/` may change.
-- **The environment is fixed** to `requirements.txt` (torch 2.9.1+cu128 on `python:3.12`). Only those
-  packages and the standard library exist on the eval machines.
-- Each run is `torchrun --standalone --nproc_per_node=8 train_gpt.py` with `DATA_PATH`, `TOKENIZER_PATH`,
-  `RUN_ID`, `SEED` and `MAX_WALLCLOCK_SECONDS=600` set in the environment. `train_gpt.py` must read those
-  and honor the wallclock cap.
-- After training, `train_gpt.py` must:
-  - write the compressed model to a file named `final_model*.ptz` in its working directory (the baseline
-    writes `final_model.int8.ptz`)
-  - print `Total submission size <label>: <N> bytes`
-  - load that file back, evaluate it, and print `final_<label>_exact val_loss:<x> val_bpb:<y>`.
+**Data and tokenizer.** Two variants of the challenge's published FineWeb export are provided, each pinned to one
+Hugging Face revision. Both use the same 50,000 validation documents.
 
-  The last `final_…_exact` line is the score. The eval measures the artifact itself: the bytes of
-  `train_gpt.py` plus the size of the `final_model*.ptz` file.
-- The benchmark runs three seeds (1337, 42, 2024) on one 8×H100 SXM machine. It reports the mean `val_bpb`
-  and `meets_rules` (1 only if every run's artifact is at most 16,000,000 bytes, training stopped within
-  600 s, and evaluation took at most 600 s). It also runs the parent's code once on the same machine, for
-  a same-machine delta.
-- Before that, `pgolf-rules` checks these rules statically, and `pgolf-smoke` runs a short training on one
-  H100 to check that the script trains, writes and round-trips its artifact under 16 MB, and prints its
-  score.
+| Variant | Data folder | Tokenizer | VOCAB_SIZE | Train shards |
+|---|---|---|---|---|
+| `sp1024` (the baseline's) | `fineweb10B_sp1024` | `fineweb_1024_bpe.model` | 1024 | 80 (8B tokens) |
+| `sp4096` | `fineweb10B_sp4096` | `fineweb_4096_bpe.model` | 4096 | 143 (14.3B tokens) |
+
+The evals download them on the eval machine, laid out as `data/cached_challenge_fineweb.py` leaves them
+(`$PGOLF_DATA_ROOT/datasets/<data folder>/fineweb_{train,val}_*.bin` and
+`$PGOLF_DATA_ROOT/tokenizers/<tokenizer>`). Nothing is downloaded by `train_gpt.py`, and nothing under `data/` may
+change. The variant is chosen by the default of `DATA_PATH` in `train_gpt.py`: the baseline's
+`os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")` selects sp1024. To use sp4096, change that default
+to `./data/datasets/fineweb10B_sp4096`, the `TOKENIZER_PATH` default to `./data/tokenizers/fineweb_4096_bpe.model`,
+and `VOCAB_SIZE` to 4096. The evals then pass that variant's folders in `DATA_PATH` and `TOKENIZER_PATH`. Other
+tokenizers aren't available. val_bpb is computed with the baseline's byte counting (`build_sentencepiece_luts`),
+which works for either tokenizer.
+
+**The environment** is fixed to `requirements.txt`: torch 2.9.1+cu128 on `python:3.12`, numpy, sentencepiece,
+zstandard and brotli. Only those packages and the standard library exist on the eval machines. There is no
+FlashAttention 3; PyTorch's SDPA flash backend is available.
+
+**Each run** is `torchrun --standalone --nproc_per_node=8 train_gpt.py`, with these set in the environment:
+`DATA_PATH`, `TOKENIZER_PATH`, `PGOLF_DATA_ROOT`, `RUN_ID`, `SEED` and `MAX_WALLCLOCK_SECONDS=600`.
+`train_gpt.py` must read those and honor the wallclock cap.
+
+**After training,** `train_gpt.py` must:
+- write the compressed model to a file named `final_model*.ptz` in its working directory (the baseline writes
+  `final_model.int8.ptz`)
+- print `Total submission size <label>: <N> bytes`, with N = the bytes of `train_gpt.py` plus the bytes of that file
+- then load that file back, evaluate it, and print `<label>_exact val_loss:<x> val_bpb:<y>`, as the baseline's
+  `final_int8_zlib_roundtrip_exact` line does.
+
+The last `_exact` line is the score. A run **meets the rules** only if all of these hold:
+- the artifact, measured on disk, is at most 16,000,000 bytes and equals the logged total
+- the run's `train_time` is at most 600 s
+- at most 600 s pass from the start of training to serialization. Anything that uses data to change the model,
+  such as quantization calibration, belongs in the training budget.
+- evaluation (from the last training step to exit) takes at most 600 s
+- the score line comes after the size line
+- the scored tokens are the whole validation split, each scored once. A tail shorter than one sequence may be
+  dropped, as the baseline does. The eval checks val_bpb·ln2/val_loss, the scored tokens per byte, against the
+  split itself, so skipped or twice-scored tokens and miscounted bytes show.
+
+**Scoring.** The benchmark runs three seeds (1337, 42, 2024) on one 8×H100 SXM machine. It reports the mean val_bpb
+and `meets_rules`, and runs the parent's code once on the same machine for a delta. Before that, `pgolf-rules`
+checks the static rules, and `pgolf-smoke` runs a short training on one H100. That short run checks that the
+script trains, stops at the cap, writes and round-trips an artifact under 16 MB, scores the whole split, and makes
+no network calls or training-data reads after training.
 
 ## Files
 
