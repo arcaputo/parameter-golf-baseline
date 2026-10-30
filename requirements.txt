@@ -1,0 +1,12 @@
+# The environment the evals run train_gpt.py in (python:3.12 on H100s). It is fixed: a candidate can't add
+# packages to the eval machines, so only these (and the standard library) are available at run time.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.9.1+cu128
+numpy==2.3.5
+sentencepiece==0.2.1
+# Optional compressors for the model artifact (zlib and lzma are in the standard library).
+zstandard==0.25.0
+brotli==1.2.0
+# Only for data/cached_challenge_fineweb.py (downloading the data; not used by train_gpt.py).
+huggingface-hub==0.36.0
+tqdm==4.67.1
